@@ -61,7 +61,9 @@ function format(r: AuditRecord): string | null {
     case "tool_executed":
       return c.green(`  ✔ executed ${d.tool} → status "${d.status}"`);
     case "tool_result_returned":
-      return c.dim(`  ↩ tool_result${d.is_error ? " (error)" : ""}: ${String(d.content).replace(/\n/g, " ")}`);
+      return d.is_error
+        ? c.dim("  ↩ tool_result (error): violations sent back to the model")
+        : c.dim(`  ↩ tool_result: ${d.content}`);
     case "model_error":
       return c.red(`  ✗ model error: ${d.error}`);
     case "escalated_to_human":

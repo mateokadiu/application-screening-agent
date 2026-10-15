@@ -9,7 +9,9 @@
   },
   "scripts": {
     "screen": "node --env-file-if-exists=.env --import tsx src/cli/screen.ts",
-    "review": "node --env-file-if-exists=.env --import tsx src/cli/review.ts",
+    "screen:samples": "rm -rf sample-output && npm run screen -- --out sample-output",
+    "screen:redteam": "rm -rf sample-output/redteam && npm run screen -- --file samples/adversarial.json --out sample-output/redteam",
+    "review": "node --import tsx src/cli/review.ts",
     "audit:verify": "node --import tsx src/cli/verify-audit.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
