@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import { CRITERION_KEYS } from "../domain/rubric.ts";
 import type { AuditListener, AuditRecord } from "./audit.ts";
 
 /**
@@ -36,7 +37,8 @@ function format(r: AuditRecord): string | null {
     case "tool_call_proposed": {
       const i = d.input as Record<string, any>;
       const crit = i?.criteria
-        ? Object.entries(i.criteria as Record<string, any>)
+        ? CRITERION_KEYS.filter((k) => i.criteria[k])
+            .map((k) => [k, i.criteria[k]] as const)
             .map(([k, v]) => `${k.padEnd(29)} ${String(v.points).padStart(2)}  ${v.status.padEnd(10)} ${v.evidence ? `"${v.evidence}"` : ""}`)
             .join("\n")
         : JSON.stringify(i);
@@ -73,10 +75,11 @@ function format(r: AuditRecord): string | null {
       return color(c.bold(`  ▶ ${r.application_id}: ${d.status}  score=${d.score ?? "—"}${d.flags.length ? `  flags=${d.flags.join(",")}` : ""}\n    ${d.reason}`));
     }
     case "run_completed": {
+      const w = Math.max(6, ...(d.results as any[]).map((x) => x.application_id.length));
       const rows = (d.results as any[]).map(
-        (x) => `  ${x.application_id.padEnd(6)} ${String(x.score ?? "—").padStart(3)}  ${x.status.padEnd(28)} ${x.flags.join(",")}`,
+        (x) => `  ${x.application_id.padEnd(w)} ${String(x.score ?? "—").padStart(3)}  ${x.status.padEnd(28)} ${x.flags.join(",")}`,
       );
-      return [c.bold("\nSummary"), `  ${"app".padEnd(6)} ${"scr".padStart(3)}  ${"status".padEnd(28)} flags`, ...rows, c.dim(`\n  audit log: ${d.audit_file}\n  decisions: ${d.store_file}`)].join("\n");
+      return [c.bold("\nSummary"), `  ${"app".padEnd(w)} ${"scr".padStart(3)}  ${"status".padEnd(28)} flags`, ...rows, c.dim(`\n  audit log: ${d.audit_file}\n  decisions: ${d.store_file}`)].join("\n");
     }
     case "human_decision":
       return c.bold(`  ${r.application_id}: ${d.from} → ${d.to} by ${d.reviewer}${d.note ? ` (${d.note})` : ""}`);

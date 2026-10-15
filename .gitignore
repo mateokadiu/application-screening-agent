@@ -3,3 +3,4 @@ output/
 .env
 *.log
 .DS_Store
+!sample-output/**/transcript.log
