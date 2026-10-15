@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
 import type { DecisionTool } from "../domain/rubric.ts";
 import type { AuditLog } from "../infra/audit.ts";
+import { LlmConfigurationError } from "../infra/errors.ts";
 import type { Llm } from "../infra/llm.ts";
 import type { ApplicationRecord, ApplicationStatus, DecisionStore } from "../infra/store.ts";
 import { checkToolCall, type GuardrailVerdict } from "../safety/guardrails.ts";
@@ -36,6 +37,7 @@ const STATUS_BY_TOOL: Record<DecisionTool, ApplicationStatus> = {
  */
 function isConfigurationError(err: unknown): boolean {
   return (
+    err instanceof LlmConfigurationError ||
     err instanceof Anthropic.AuthenticationError ||
     err instanceof Anthropic.PermissionDeniedError ||
     err instanceof Anthropic.NotFoundError ||

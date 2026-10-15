@@ -8,15 +8,15 @@ A small AI agent that reviews applications for a **Customer Support Specialist**
 4. never rejects on its own: `reject` files a recommendation that waits for a human,
 5. logs every decision, tool call and guardrail check to a tamper-evident audit log.
 
-It uses Claude (`claude-opus-5-5`) through the Anthropic SDK with tool calling. TypeScript, Node 22, no UI.
+It runs on Claude (`claude-opus-5-5`, the default) or Google Gemini (free tier), both with native tool calling. TypeScript, Node 22, no UI.
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env            # add your ANTHROPIC_API_KEY
+cp .env.example .env            # add ANTHROPIC_API_KEY, or GEMINI_API_KEY (free at aistudio.google.com)
 npm run screen:samples          # screens the 3 samples → sample-output/
-npm test                        # 31 offline tests, no API key needed
+npm test                        # 35 offline tests, no API key needed
 ```
 
 Other commands:
@@ -66,6 +66,10 @@ flowchart LR
 ```
 
 **The model proposes, code decides.** Claude reads the application and fills in a structured assessment: for each criterion a status (`evidenced` / `ruled_out` / `not_stated`), points, and an exact quote from the application as evidence. It then calls the tool it thinks the policy requires. Before anything is written, `src/safety/guardrails.ts` checks the call. If it fails, the reasons go back to the model as an error `tool_result` and it gets to correct itself (up to 3 turns). If it still can't produce a valid decision, the application goes to a human.
+
+### Model providers
+
+The agent loop speaks one message format. `src/infra/gemini.ts` translates Gemini's function calls and replies into it (and replays Gemini's thought signatures verbatim), so the prompt, tools, guardrails and audit log are the same whichever model runs. With only `GEMINI_API_KEY` set, Gemini is picked automatically. `SCREENING_PROVIDER` and `SCREENING_MODEL` override the choice. The safety guarantees don't depend on which model is used, because none of them rely on the model behaving.
 
 ### Scoring rules
 
@@ -135,7 +139,8 @@ src/
   agent/screen.ts         the agent loop: model ↔ guardrails ↔ tools
   safety/injection.ts     injection tripwire
   safety/guardrails.ts    checks every proposed tool call
-  infra/llm.ts            Anthropic client config
+  infra/llm.ts            provider selection + Anthropic client config
+  infra/gemini.ts         Gemini adapter (same message format, same loop)
   infra/audit.ts          hash-chained JSONL audit log
   infra/store.ts          application status store
   infra/reporter.ts       console/transcript view of the audit stream

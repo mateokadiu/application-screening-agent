@@ -16,7 +16,7 @@ function format(r: AuditRecord): string | null {
   const d = r.data as Record<string, any>;
   switch (r.event) {
     case "run_started":
-      return c.bold(`\nScreening run ${r.run_id}`) + c.dim(`\n  model=${d.model} effort=${d.effort} rubric=${d.rubric_version} prompt_sha256=${String(d.prompt_sha256).slice(0, 12)}…`);
+      return c.bold(`\nScreening run ${r.run_id}`) + c.dim(`\n  provider=${d.provider} model=${d.model} effort=${d.effort} rubric=${d.rubric_version} prompt_sha256=${String(d.prompt_sha256).slice(0, 12)}…`);
     case "application_received":
       return `\n${c.bold(c.cyan(`━━ Application ${r.application_id} ━━`))}\n${indent(`"${d.text}"`, "  ")}`;
     case "injection_scan":

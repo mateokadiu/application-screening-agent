@@ -1,22 +1,49 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT } from "../agent/prompt.ts";
 import { DECISION_TOOLS } from "../agent/tools.ts";
+import { createGeminiLlm } from "./gemini.ts";
+
+export { LlmConfigurationError } from "./errors.ts";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export type Provider = "anthropic" | "gemini";
 
 export interface LlmConfig {
+  provider: Provider;
   model: string;
   effort: Effort;
 }
 
-/** The one capability the agent needs from a model. Swappable for a fake in tests. */
+/**
+ * The one capability the agent needs from a model. The agent speaks the
+ * Anthropic message format; other providers are adapted to it (see gemini.ts).
+ * Swappable for a scripted fake in tests.
+ */
 export type Llm = (messages: Anthropic.Beta.BetaMessageParam[]) => Promise<Anthropic.Beta.BetaMessage>;
 
+const DEFAULT_MODEL: Record<Provider, string> = {
+  anthropic: "claude-opus-5-5",
+  gemini: "gemini-3.8-flash",
+};
+
+export const API_KEY_VAR: Record<Provider, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  gemini: "GEMINI_API_KEY",
+};
+
 export function loadLlmConfig(env = process.env): LlmConfig {
+  const provider = (env.SCREENING_PROVIDER as Provider | undefined) ??
+    (!env.ANTHROPIC_API_KEY && env.GEMINI_API_KEY ? "gemini" : "anthropic");
+  if (!(provider in DEFAULT_MODEL)) throw new Error(`Unknown SCREENING_PROVIDER "${provider}".`);
   return {
-    model: env.SCREENING_MODEL ?? "claude-opus-5-5",
+    provider,
+    model: env.SCREENING_MODEL ?? DEFAULT_MODEL[provider],
     effort: (env.SCREENING_EFFORT as Effort | undefined) ?? "high",
   };
+}
+
+export function createLlm(config: LlmConfig): Llm {
+  return config.provider === "gemini" ? createGeminiLlm(config) : createAnthropicLlm(config);
 }
 
 export function createAnthropicLlm(config: LlmConfig, client = new Anthropic()): Llm {
