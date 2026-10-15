@@ -34,12 +34,12 @@ const RULES: Array<{ rule: string; pattern: RegExp }> = [
   {
     rule: "addresses_the_ai",
     pattern:
-      /\b(you are now|as an ai|dear (ai|assistant|model|bot|screener)|(note|message) (to|for) the (ai|assistant|model|reviewer|screener|bot)|ai (reviewer|screener|assistant))\b/gi,
+      /\b(you are now|as an ai|dear (ai|assistant|model|bot|screener)|(note|message) (to|for) (the )?(ai|assistant|model|reviewer|screener|bot|evaluator)|whoever (evaluates|reviews|screens|reads)|ai (reviewer|screener|assistant))\b/gi,
   },
   {
     rule: "dictates_outcome",
     pattern:
-      /\b((advance|approve|shortlist|accept|pass|hire|move)\s+(this|the|me|my)\s+(candidate|application|applicant|profile)|(score|rate|grade)\b[^.\n]{0,30}\b(100|maximum|max|perfect|full marks))\b/gi,
+      /\b((advance|approve|shortlist|accept|pass|hire|move)\s+(this|the|me|my)\s+(candidate|application|applicant|profile)|(score|rate|grade)\b[^.\n]{0,30}\b(100|maximum|max|perfect|full marks)|correct (outcome|decision|score|result) (here )?is)\b/gi,
   },
   {
     rule: "names_internal_tools",
@@ -47,12 +47,13 @@ const RULES: Array<{ rule: string; pattern: RegExp }> = [
   },
   {
     rule: "markup_spoofing",
-    pattern: /<\/?\s*(system|instructions?|application\w*|tool\w*|assistant|user|prompt)\b[^>]*>|\[\/?(INST|SYS)\]|```\s*(system|json)/gi,
+    pattern:
+      /<\/?\s*(system|instructions?|application\w*|tool\w*|assistant|user|prompt)\b[^>]*>|\[\/?(INST|SYS)\]|```\s*(system|json)/gi,
   },
   {
     rule: "hidden_characters",
     // Zero-width and bidi-override characters have no place in a job application.
-    pattern: /[​-‏‪-‮⁠-⁤﻿]/g,
+    pattern: /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g,
   },
 ];
 

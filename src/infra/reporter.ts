@@ -9,37 +9,63 @@ import type { AuditListener, AuditRecord } from "./audit.ts";
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code: number) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
-const c = { dim: paint(2), bold: paint(1), red: paint(31), green: paint(32), yellow: paint(33), cyan: paint(36), magenta: paint(35) };
+const c = {
+  dim: paint(2),
+  bold: paint(1),
+  red: paint(31),
+  green: paint(32),
+  yellow: paint(33),
+  cyan: paint(36),
+  magenta: paint(35),
+};
 
-const indent = (s: string, pad = "      ") => s.split("\n").map((l) => pad + l).join("\n");
+const indent = (s: string, pad = "      ") =>
+  s
+    .split("\n")
+    .map((l) => pad + l)
+    .join("\n");
 
 function format(r: AuditRecord): string | null {
   const d = r.data as Record<string, any>;
   switch (r.event) {
     case "run_started":
-      return c.bold(`\nScreening run ${r.run_id}`) + c.dim(`\n  provider=${d.provider} model=${d.model} effort=${d.effort} rubric=${d.rubric_version} prompt_sha256=${String(d.prompt_sha256).slice(0, 12)}…`);
+      return (
+        c.bold(`\nScreening run ${r.run_id}`) +
+        c.dim(
+          `\n  provider=${d.provider} model=${d.model} effort=${d.effort} rubric=${d.rubric_version} prompt_sha256=${String(d.prompt_sha256).slice(0, 12)}…`,
+        )
+      );
     case "application_received":
       return `\n${c.bold(c.cyan(`━━ Application ${r.application_id} ━━`))}\n${indent(`"${d.text}"`, "  ")}`;
     case "injection_scan":
       return d.flagged
-        ? c.yellow(`  ⚠ injection scanner: ${d.matches.length} hit(s) [${[...new Set(d.matches.map((m: any) => m.rule))].join(", ")}]\n${indent(`"${d.matches[0].excerpt}"`)}`)
+        ? c.yellow(
+            `  ⚠ injection scanner: ${d.matches.length} hit(s) [${[...new Set(d.matches.map((m: any) => m.rule))].join(", ")}]\n${indent(`"${d.matches[0].excerpt}"`)}`,
+          )
         : c.dim("  ✓ injection scanner: clean");
     case "model_request":
       return c.dim(`  → model turn ${d.turn}`);
     case "model_response": {
-      const lines = [c.dim(`  ← ${d.model} stop=${d.stop_reason} in=${d.usage.input_tokens} out=${d.usage.output_tokens} cache_read=${d.usage.cache_read_input_tokens}`)];
+      const lines = [
+        c.dim(
+          `  ← ${d.model} stop=${d.stop_reason} in=${d.usage.input_tokens} out=${d.usage.output_tokens} cache_read=${d.usage.cache_read_input_tokens}`,
+        ),
+      ];
       if (d.thinking_summary) lines.push(c.dim(indent(`reasoning summary: ${d.thinking_summary}`)));
       if (d.text) lines.push(indent(`text: ${d.text}`));
       return lines.join("\n");
     }
-    case "nudge_sent":
-      return c.yellow(`  ↻ no tool call — nudging the model`);
+    case "feedback_sent_to_model":
+      return c.yellow(`  ↻ sent back to the model: ${String(d.message).split("\n")[0]}`);
     case "tool_call_proposed": {
       const i = d.input as Record<string, any>;
       const crit = i?.criteria
         ? CRITERION_KEYS.filter((k) => i.criteria[k])
             .map((k) => [k, i.criteria[k]] as const)
-            .map(([k, v]) => `${k.padEnd(29)} ${String(v.points).padStart(2)}  ${v.status.padEnd(10)} ${v.evidence ? `"${v.evidence}"` : ""}`)
+            .map(
+              ([k, v]) =>
+                `${k.padEnd(29)} ${String(v.points).padStart(2)}  ${v.status.padEnd(10)} ${v.evidence ? `"${v.evidence}"` : ""}`,
+            )
             .join("\n")
         : JSON.stringify(i);
       const extras = [
@@ -55,32 +81,47 @@ function format(r: AuditRecord): string | null {
       ].join("\n");
     }
     case "guardrail_blocked":
-      return c.red(`  ✗ guardrails blocked ${d.tool}:\n${indent(d.violations.map((v: string) => `- ${v}`).join("\n"))}`);
+      return c.red(
+        `  ✗ guardrails blocked ${d.tool}:\n${indent(d.violations.map((v: string) => `- ${v}`).join("\n"))}`,
+      );
     case "guardrail_escalated":
       return c.yellow(`  ⏸ guardrails escalated ${d.tool}: ${d.reason}`);
     case "guardrail_passed":
-      return c.green(`  ✓ guardrails passed (score=${d.score}, ceiling=${d.ceiling}${d.flags.length ? `, flags=${d.flags.join(",")}` : ""})`);
+      return c.green(
+        `  ✓ guardrails passed (score=${d.score}, ceiling=${d.ceiling}${d.flags.length ? `, flags=${d.flags.join(",")}` : ""})`,
+      );
     case "tool_executed":
       return c.green(`  ✔ executed ${d.tool} → status "${d.status}"`);
-    case "tool_result_returned":
-      return d.is_error
-        ? c.dim("  ↩ tool_result (error): violations sent back to the model")
-        : c.dim(`  ↩ tool_result: ${d.content}`);
     case "model_error":
       return c.red(`  ✗ model error: ${d.error}`);
     case "escalated_to_human":
       return c.yellow(`  ⏸ escalated to human review: ${d.reason}`);
     case "decision_final": {
-      const color = d.status === "advanced_to_interview" ? c.green : d.status === "more_info_requested" ? c.cyan : c.yellow;
-      return color(c.bold(`  ▶ ${r.application_id}: ${d.status}  score=${d.score ?? "—"}${d.flags.length ? `  flags=${d.flags.join(",")}` : ""}\n    ${d.reason}`));
+      const color =
+        d.status === "advanced_to_interview" ? c.green : d.status === "more_info_requested" ? c.cyan : c.yellow;
+      return color(
+        c.bold(
+          `  ▶ ${r.application_id}: ${d.status}  score=${d.score ?? "—"}${d.flags.length ? `  flags=${d.flags.join(",")}` : ""}\n    ${d.reason}`,
+        ),
+      );
     }
     case "run_completed": {
       const w = Math.max(6, ...(d.results as any[]).map((x) => x.application_id.length));
       const rows = (d.results as any[]).map(
-        (x) => `  ${x.application_id.padEnd(w)} ${String(x.score ?? "—").padStart(3)}  ${x.status.padEnd(28)} ${x.flags.join(",")}`,
+        (x) =>
+          `  ${x.application_id.padEnd(w)} ${String(x.score ?? "—").padStart(3)}  ${x.status.padEnd(28)} ${x.flags.join(",")}`,
       );
-      return [c.bold("\nSummary"), `  ${"app".padEnd(w)} ${"scr".padStart(3)}  ${"status".padEnd(28)} flags`, ...rows, c.dim(`\n  audit log: ${d.audit_file}\n  decisions: ${d.store_file}`)].join("\n");
+      return [
+        c.bold("\nSummary"),
+        `  ${"app".padEnd(w)} ${"scr".padStart(3)}  ${"status".padEnd(28)} flags`,
+        ...rows,
+        c.dim(`\n  audit log: ${d.audit_file}\n  decisions: ${d.store_file}`),
+      ].join("\n");
     }
+    case "skipped_human_decided":
+      return c.dim(`  ⤳ skipped: already decided by ${d.by} (${d.status})`);
+    case "run_aborted":
+      return c.red(`  ✗ run aborted after ${d.completed} application(s): ${d.error}`);
     case "human_decision":
       return c.bold(`  ${r.application_id}: ${d.from} → ${d.to} by ${d.reviewer}${d.note ? ` (${d.note})` : ""}`);
     default:

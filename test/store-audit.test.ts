@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,5 +36,33 @@ describe("audit log", () => {
 
     writeFileSync(file, readFileSync(file, "utf8").replace("rejection_pending_approval", "advanced_to_interview"));
     expect(verifyAuditFile(file)).toMatchObject({ ok: false, line: 1 });
+  });
+});
+
+describe("robustness", () => {
+  it("stores an application whose id is __proto__ like any other", () => {
+    const file = join(tmp(), "d.json");
+    new DecisionStore(file).recordAgentDecision({
+      application_id: "__proto__",
+      run_id: "r",
+      status: "more_info_requested",
+      score: 20,
+      reason: "x",
+      flags: [],
+      details: {},
+    });
+    expect(new DecisionStore(file).get("__proto__")?.status).toBe("more_info_requested");
+  });
+
+  it("reports a half-written audit line instead of crashing, and refuses to append to it", () => {
+    const file = join(tmp(), "audit.jsonl");
+    new AuditLog(file, "run_1").write("decision_final", {}, "A");
+    appendFileSync(file, '{"seq":2,"ts":"2026-');
+    expect(verifyAuditFile(file)).toMatchObject({
+      ok: false,
+      line: 2,
+      problem: expect.stringMatching(/not valid JSON/),
+    });
+    expect(() => new AuditLog(file, "run_2")).toThrow(/damaged at line 2/);
   });
 });

@@ -3,7 +3,7 @@ import { SYSTEM_PROMPT } from "../agent/prompt.ts";
 import { DECISION_TOOLS } from "../agent/tools.ts";
 import { createGeminiLlm } from "./gemini.ts";
 
-export { LlmConfigurationError } from "./errors.ts";
+export { FatalLlmError } from "./errors.ts";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type Provider = "anthropic" | "gemini";
@@ -31,15 +31,16 @@ export const API_KEY_VAR: Record<Provider, string> = {
   gemini: "GEMINI_API_KEY",
 };
 
+const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
 export function loadLlmConfig(env = process.env): LlmConfig {
-  const provider = (env.SCREENING_PROVIDER as Provider | undefined) ??
-    (!env.ANTHROPIC_API_KEY && env.GEMINI_API_KEY ? "gemini" : "anthropic");
-  if (!(provider in DEFAULT_MODEL)) throw new Error(`Unknown SCREENING_PROVIDER "${provider}".`);
-  return {
-    provider,
-    model: env.SCREENING_MODEL ?? DEFAULT_MODEL[provider],
-    effort: (env.SCREENING_EFFORT as Effort | undefined) ?? "high",
-  };
+  const provider = (env.SCREENING_PROVIDER ||
+    (!env.ANTHROPIC_API_KEY && env.GEMINI_API_KEY ? "gemini" : "anthropic")) as Provider;
+  if (!Object.hasOwn(DEFAULT_MODEL, provider))
+    throw new Error(`Unknown SCREENING_PROVIDER "${provider}" (use anthropic or gemini).`);
+  const effort = (env.SCREENING_EFFORT || "high") as Effort;
+  if (!EFFORTS.includes(effort)) throw new Error(`Unknown SCREENING_EFFORT "${effort}" (use ${EFFORTS.join(", ")}).`);
+  return { provider, model: env.SCREENING_MODEL || DEFAULT_MODEL[provider], effort };
 }
 
 export function createLlm(config: LlmConfig): Llm {

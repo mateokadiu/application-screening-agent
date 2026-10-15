@@ -41,6 +41,11 @@ export class AuditLog {
       const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
       const last = lines.at(-1);
       if (last) {
+        const check = verifyAuditFile(file);
+        if (!check.ok) {
+          // Fail closed: appending to a broken chain would hide where it broke.
+          throw new Error(`Audit log ${file} is damaged at line ${check.line} (${check.problem}); refusing to append.`);
+        }
         const parsed = JSON.parse(last) as AuditRecord;
         this.seq = parsed.seq;
         this.prevHash = parsed.hash;
@@ -70,11 +75,19 @@ export class AuditLog {
   }
 }
 
-export function verifyAuditFile(file: string): { ok: true; count: number } | { ok: false; line: number; problem: string } {
+export function verifyAuditFile(
+  file: string,
+): { ok: true; count: number } | { ok: false; line: number; problem: string } {
   const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
   let prev = GENESIS;
   for (const [i, line] of lines.entries()) {
-    const { hash, ...rest } = JSON.parse(line) as AuditRecord;
+    let parsed: AuditRecord;
+    try {
+      parsed = JSON.parse(line) as AuditRecord;
+    } catch {
+      return { ok: false, line: i + 1, problem: "entry is not valid JSON (partial write?)" };
+    }
+    const { hash, ...rest } = parsed;
     if (rest.prev_hash !== prev) return { ok: false, line: i + 1, problem: "prev_hash does not match previous entry" };
     if (hashRecord(rest) !== hash) return { ok: false, line: i + 1, problem: "entry content does not match its hash" };
     prev = hash;

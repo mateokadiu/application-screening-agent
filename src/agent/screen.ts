@@ -1,18 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
+import type { Application } from "../domain/applications.ts";
 import type { DecisionTool } from "../domain/rubric.ts";
 import type { AuditLog } from "../infra/audit.ts";
-import { LlmConfigurationError } from "../infra/errors.ts";
+import { FatalLlmError } from "../infra/errors.ts";
 import type { Llm } from "../infra/llm.ts";
 import type { ApplicationRecord, ApplicationStatus, DecisionStore } from "../infra/store.ts";
 import { checkToolCall, type GuardrailVerdict } from "../safety/guardrails.ts";
 import { scanForInjection } from "../safety/injection.ts";
 import { wrapApplication } from "./prompt.ts";
-
-export interface Application {
-  id: string;
-  text: string;
-}
 
 export interface ScreeningDeps {
   llm: Llm;
@@ -31,13 +27,13 @@ const STATUS_BY_TOOL: Record<DecisionTool, ApplicationStatus> = {
 };
 
 /**
- * Errors that mean the run itself is misconfigured (bad key, unknown model,
- * malformed request). Escalating every application to a human wouldn't help,
- * so these abort the run instead.
+ * Errors that mean the run can't continue (bad key, unknown model, malformed
+ * request, exhausted quota). Escalating every remaining application to a human
+ * wouldn't help, so these abort the run instead.
  */
-function isConfigurationError(err: unknown): boolean {
+function isFatal(err: unknown): boolean {
   return (
-    err instanceof LlmConfigurationError ||
+    err instanceof FatalLlmError ||
     err instanceof Anthropic.AuthenticationError ||
     err instanceof Anthropic.PermissionDeniedError ||
     err instanceof Anthropic.NotFoundError ||
@@ -47,7 +43,6 @@ function isConfigurationError(err: unknown): boolean {
 
 export async function screenApplication(app: Application, deps: ScreeningDeps): Promise<ApplicationRecord> {
   const { audit, store } = deps;
-  const runId = audit.runId;
   const log = (event: string, data: Record<string, unknown>) => audit.write(event, data, app.id);
 
   log("application_received", {
@@ -55,29 +50,47 @@ export async function screenApplication(app: Application, deps: ScreeningDeps): 
     sha256: createHash("sha256").update(app.text).digest("hex"),
   });
 
+  // A human's decision is final. Re-running the agent must not overwrite it.
+  const existing = store.get(app.id);
+  if (existing && store.isHumanDecided(app.id)) {
+    log("skipped_human_decided", { status: existing.status, by: existing.history.at(-1)?.by });
+    return existing;
+  }
+
   const scan = scanForInjection(app.text);
   log("injection_scan", { ...scan });
 
-  const escalate = (reason: string, extra: { score?: number; flags?: string[]; details?: Record<string, unknown> } = {}) => {
+  // Remembered across turns so an escalation still carries the model's own flag.
+  let modelFlagged = false;
+  const currentFlags = () => [
+    ...(scan.flagged ? ["injection_scanner_hit"] : []),
+    ...(modelFlagged ? ["model_reported_manipulation"] : []),
+  ];
+
+  const finish = (record: ApplicationRecord) => {
+    log("decision_final", { status: record.status, score: record.score, reason: record.reason, flags: record.flags });
+    return record;
+  };
+
+  const escalate = (reason: string, extra: { score?: number; details?: Record<string, unknown> } = {}) => {
     const record = store.recordAgentDecision({
       application_id: app.id,
-      run_id: runId,
+      run_id: audit.runId,
       status: "needs_human_review",
       score: extra.score ?? null,
       reason,
-      flags: extra.flags ?? (scan.flagged ? ["injection_scanner_hit"] : []),
+      flags: currentFlags(),
       details: extra.details ?? {},
     });
     log("escalated_to_human", { reason, status: record.status });
-    log("decision_final", summarize(record));
-    return record;
+    return finish(record);
   };
 
   const execute = (verdict: Extract<GuardrailVerdict, { outcome: "allow" }>) => {
     const { input } = verdict;
     const record = store.recordAgentDecision({
       application_id: app.id,
-      run_id: runId,
+      run_id: audit.runId,
       status: STATUS_BY_TOOL[verdict.tool],
       score: verdict.score,
       reason: input.reason,
@@ -97,6 +110,23 @@ export async function screenApplication(app: Application, deps: ScreeningDeps): 
   const { content, boundary } = wrapApplication(app.text);
   log("prompt_built", { boundary });
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
+  let lastRejected: { tool: string; violations: string[] } | undefined;
+
+  /** Answers the model's turn with an error it can act on, so the next turn can correct it. */
+  const sendFeedback = (turn: number, message: string, calls: Anthropic.Beta.BetaToolUseBlock[]) => {
+    log("feedback_sent_to_model", { turn, message });
+    messages.push({
+      role: "user",
+      content: calls.length
+        ? calls.map((c): Anthropic.Beta.BetaToolResultBlockParam => ({
+            type: "tool_result",
+            tool_use_id: c.id,
+            is_error: true,
+            content: message,
+          }))
+        : message,
+    });
+  };
 
   for (let turn = 1; turn <= MAX_MODEL_TURNS; turn++) {
     log("model_request", { turn, message_count: messages.length });
@@ -105,9 +135,13 @@ export async function screenApplication(app: Application, deps: ScreeningDeps): 
     try {
       response = await deps.llm(messages);
     } catch (err) {
-      if (isConfigurationError(err)) throw err;
-      log("model_error", { turn, error: err instanceof Error ? err.message : String(err) });
-      return escalate("Model call failed; needs manual screening.");
+      const error = err instanceof Error ? err.message : String(err);
+      log("model_error", { turn, error });
+      // Record this application before a fatal error aborts the run, so
+      // nothing is left half-screened and invisible to reviewers.
+      const record = escalate("Model call failed; needs manual screening.");
+      if (isFatal(err)) throw err;
+      return record;
     }
 
     log("model_response", describeResponse(turn, response));
@@ -120,84 +154,62 @@ export async function screenApplication(app: Application, deps: ScreeningDeps): 
     messages.push({ role: "assistant", content: response.content });
 
     const calls = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
-    if (calls.length === 0) {
-      const nudge =
-        "No decision was recorded. Call exactly one of advance_to_interview, request_more_info or reject.";
-      log("nudge_sent", { turn, message: nudge });
-      messages.push({ role: "user", content: nudge });
+    for (const call of calls) {
+      log("tool_call_proposed", { turn, tool_use_id: call.id, tool: call.name, input: call.input });
+      if ((call.input as { suspected_manipulation?: unknown })?.suspected_manipulation === true) modelFlagged = true;
+    }
+
+    if (calls.length !== 1) {
+      // No call, or several at once (Claude is limited to one; Gemini isn't). Either
+      // way nothing is executed: one application gets exactly one decision.
+      const message =
+        calls.length === 0
+          ? "No decision was recorded. Call exactly one of advance_to_interview, request_more_info or reject."
+          : "Decision NOT recorded: make exactly one tool call per turn. None of these calls were executed.";
+      sendFeedback(turn, message, calls);
       continue;
     }
 
-    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-    let decided: ApplicationRecord | undefined;
+    const call = calls[0]!;
+    const verdict = checkToolCall(call.name, call.input, { applicationText: app.text, scan });
 
-    for (const call of calls) {
-      log("tool_call_proposed", { turn, tool_use_id: call.id, tool: call.name, input: call.input });
+    if (verdict.outcome === "retry") {
+      log("guardrail_blocked", { turn, tool: call.name, violations: verdict.violations });
+      lastRejected = { tool: call.name, violations: verdict.violations };
+      sendFeedback(turn, `Decision NOT recorded:\n- ${verdict.violations.join("\n- ")}`, calls);
+      continue;
+    }
 
-      if (decided) {
-        results.push(toolError(call.id, "A decision has already been recorded for this application."));
-        continue;
-      }
-
-      const verdict = checkToolCall(call.name, call.input, { applicationText: app.text, scan });
-
-      if (verdict.outcome === "retry") {
-        log("guardrail_blocked", { turn, tool: call.name, violations: verdict.violations });
-        results.push(toolError(call.id, `Decision NOT recorded:\n- ${verdict.violations.join("\n- ")}`));
-        continue;
-      }
-
-      if (verdict.outcome === "escalate") {
-        log("guardrail_escalated", { turn, tool: call.name, reason: verdict.reason, flags: verdict.flags });
-        decided = escalate(verdict.reason, {
-          score: verdict.score,
-          flags: verdict.flags,
-          details: { proposed_tool: call.name, proposed_reason: verdict.input.reason, criteria: verdict.input.criteria },
-        });
-        results.push(toolError(call.id, "Not executed: routed to a human reviewer."));
-        continue;
-      }
-
-      log("guardrail_passed", { turn, tool: verdict.tool, score: verdict.score, ceiling: verdict.ceiling, flags: verdict.flags });
-      decided = execute(verdict);
-      results.push({
-        type: "tool_result",
-        tool_use_id: call.id,
-        content: JSON.stringify({ recorded: true, status: decided.status }),
+    if (verdict.outcome === "escalate") {
+      log("guardrail_escalated", { turn, tool: call.name, reason: verdict.reason, flags: verdict.flags });
+      return escalate(verdict.reason, {
+        score: verdict.score,
+        details: { proposed_tool: call.name, proposed_reason: verdict.input.reason, criteria: verdict.input.criteria },
       });
     }
 
-    for (const r of results) log("tool_result_returned", { ...r });
-    messages.push({ role: "user", content: results });
-
-    if (decided) {
-      if (decided.status !== "needs_human_review") log("decision_final", summarize(decided));
-      return decided;
-    }
+    log("guardrail_passed", {
+      turn,
+      tool: verdict.tool,
+      score: verdict.score,
+      ceiling: verdict.ceiling,
+      flags: verdict.flags,
+    });
+    return finish(execute(verdict));
   }
 
-  return escalate(`No valid decision after ${MAX_MODEL_TURNS} model turns.`);
-}
-
-function toolError(toolUseId: string, message: string): Anthropic.Beta.BetaToolResultBlockParam {
-  return { type: "tool_result", tool_use_id: toolUseId, is_error: true, content: message };
-}
-
-function summarize(record: ApplicationRecord) {
-  return { status: record.status, score: record.score, reason: record.reason, flags: record.flags };
+  return escalate(`No valid decision after ${MAX_MODEL_TURNS} model turns.`, {
+    details: lastRejected ? { last_rejected_call: lastRejected } : {},
+  });
 }
 
 function describeResponse(turn: number, response: Anthropic.Beta.BetaMessage) {
-  const thinking = response.content
-    .filter((b): b is Anthropic.Beta.BetaThinkingBlock => b.type === "thinking")
-    .map((b) => b.thinking)
-    .join("\n")
-    .trim();
-  const text = response.content
-    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+  const textOf = <T extends Anthropic.Beta.BetaContentBlock>(type: T["type"], pick: (b: T) => string) =>
+    response.content
+      .filter((b): b is T => b.type === type)
+      .map(pick)
+      .join("\n")
+      .trim();
   return {
     turn,
     id: response.id,
@@ -209,8 +221,8 @@ function describeResponse(turn: number, response: Anthropic.Beta.BetaMessage) {
       cache_read_input_tokens: response.usage.cache_read_input_tokens ?? 0,
       cache_creation_input_tokens: response.usage.cache_creation_input_tokens ?? 0,
     },
-    thinking_summary: thinking,
-    text,
-    tool_calls: response.content.filter((b) => b.type === "tool_use").map((b) => (b as Anthropic.Beta.BetaToolUseBlock).name),
+    thinking_summary: textOf<Anthropic.Beta.BetaThinkingBlock>("thinking", (b) => b.thinking),
+    text: textOf<Anthropic.Beta.BetaTextBlock>("text", (b) => b.text),
+    tool_calls: response.content.flatMap((b) => (b.type === "tool_use" ? [b.name] : [])),
   };
 }

@@ -5,16 +5,19 @@
   "description": "An AI agent that screens job applications with tool calls, guardrails and human approval for rejections.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "scripts": {
     "screen": "node --env-file-if-exists=.env --import tsx src/cli/screen.ts",
-    "screen:samples": "rm -rf sample-output && npm run screen -- --out sample-output",
+    "screen:samples": "rm -f sample-output/audit.jsonl sample-output/decisions.json sample-output/transcript.log sample-output/summary.md && npm run screen -- --out sample-output",
     "screen:redteam": "rm -rf sample-output/redteam && npm run screen -- --file samples/adversarial.json --out sample-output/redteam",
+    "screen:all": "npm run screen:samples && npm run screen:redteam",
     "review": "node --import tsx src/cli/review.ts",
     "audit:verify": "node --import tsx src/cli/verify-audit.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "check": "tsc --noEmit && prettier --check . && vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",
@@ -23,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "prettier": "^3.9.10",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.4"

@@ -20,7 +20,7 @@ const criterionJsonSchema = (key: (typeof CRITERION_KEYS)[number]) => ({
     evidence: {
       type: "string",
       description:
-        "Exact, contiguous excerpt copied from the application that supports the points. Empty string when status is not_stated.",
+        "Exact, contiguous excerpt copied from the application that supports the status and points. Empty string when status is not_stated.",
     },
   },
   required: ["status", "points", "evidence"],
@@ -55,8 +55,7 @@ const baseRequired = ["criteria", "score", "reason", "suspected_manipulation", "
 export const DECISION_TOOLS: Anthropic.Beta.BetaTool[] = [
   {
     name: "advance_to_interview",
-    description:
-      "Move the candidate to the interview stage. Allowed only when the rubric score is at least 70.",
+    description: "Move the candidate to the interview stage. Allowed only when the rubric score is at least 70.",
     strict: true,
     input_schema: {
       type: "object",
@@ -124,7 +123,7 @@ const assessmentSchema = z.object({
     volume_and_tools: criterion(CRITERIA.volume_and_tools.max),
     languages: criterion(CRITERIA.languages.max),
     availability: criterion(CRITERIA.availability.max),
-    communication_and_motivation: criterion(CRITERIA.communication_and_motivation.max),
+    motivation_and_attitude: criterion(CRITERIA.motivation_and_attitude.max),
   }),
   score: z.number().int().min(0).max(100),
   reason: z

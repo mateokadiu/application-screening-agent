@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import type { Application } from "../agent/screen.ts";
+
+export interface Application {
+  id: string;
+  text: string;
+}
 
 const applicationsSchema = z.array(
   z.object({

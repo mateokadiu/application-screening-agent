@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { screenApplication } from "../src/agent/screen.ts";
 import { AuditLog } from "../src/infra/audit.ts";
-import { LlmConfigurationError } from "../src/infra/errors.ts";
-import { createGeminiLlm } from "../src/infra/gemini.ts";
+import { FatalLlmError } from "../src/infra/errors.ts";
+import { createGeminiLlm, retryDelaySeconds } from "../src/infra/gemini.ts";
 import type { LlmConfig } from "../src/infra/llm.ts";
 import { DecisionStore } from "../src/infra/store.ts";
 import { ALEX, alexCompromised, alexMoreInfo } from "./fixtures.ts";
@@ -51,7 +51,7 @@ function fakeClient(script: Array<GenerateContentResponse | Error>) {
 function deps(client: ReturnType<typeof fakeClient>) {
   const dir = mkdtempSync(join(tmpdir(), "screening-gemini-"));
   return {
-    llm: createGeminiLlm(config, client, () => 0),
+    llm: createGeminiLlm(config, client, async () => {}),
     audit: new AuditLog(join(dir, "audit.jsonl"), "run_test"),
     store: new DecisionStore(join(dir, "decisions.json")),
   };
@@ -60,7 +60,7 @@ function deps(client: ReturnType<typeof fakeClient>) {
 describe("Gemini adapter", () => {
   it("maps a function call to a tool_use and keeps the reasoning summary", async () => {
     const client = fakeClient([callResponse("request_more_info", alexMoreInfo)]);
-    const message = await createGeminiLlm(config, client, () => 0)([{ role: "user", content: "hi" }]);
+    const message = await createGeminiLlm(config, client, async () => {})([{ role: "user", content: "hi" }]);
     expect(message.stop_reason).toBe("tool_use");
     expect(message.model).toBe("gemini-test-001");
     expect(message.usage.output_tokens).toBe(50);
@@ -68,12 +68,9 @@ describe("Gemini adapter", () => {
 
     const req = client.requests[0]!;
     expect(req.config?.toolConfig?.functionCallingConfig?.mode).toBe("ANY");
-    const declarations = (req.config?.tools?.[0] as { functionDeclarations: Array<{ name: string }> }).functionDeclarations;
-    expect(declarations.map((f) => f.name)).toEqual([
-      "advance_to_interview",
-      "request_more_info",
-      "reject",
-    ]);
+    const declarations = (req.config?.tools?.[0] as { functionDeclarations: Array<{ name: string }> })
+      .functionDeclarations;
+    expect(declarations.map((f) => f.name)).toEqual(["advance_to_interview", "request_more_info", "reject"]);
   });
 
   it("runs the same guarded loop: a fooled Gemini is blocked and corrects itself", async () => {
@@ -101,10 +98,43 @@ describe("Gemini adapter", () => {
   });
 
   it("retries rate limits, and aborts the run on configuration errors", async () => {
-    const retried = fakeClient([new ApiError({ message: "quota", status: 429 }), callResponse("request_more_info", alexMoreInfo)]);
+    const retried = fakeClient([
+      new ApiError({ message: "quota", status: 429 }),
+      callResponse("request_more_info", alexMoreInfo),
+    ]);
     expect((await screenApplication({ id: "C", text: ALEX }, deps(retried))).status).toBe("more_info_requested");
 
     const badKey = fakeClient([new ApiError({ message: "API key not valid", status: 400 })]);
-    await expect(screenApplication({ id: "C", text: ALEX }, deps(badKey))).rejects.toBeInstanceOf(LlmConfigurationError);
+    await expect(screenApplication({ id: "C", text: ALEX }, deps(badKey))).rejects.toBeInstanceOf(FatalLlmError);
+  });
+});
+
+describe("Gemini quotas", () => {
+  const DAILY =
+    'Quota exceeded for metric: generate_content_free_tier_requests, limit: 20. Please retry in 9h56m9.48s. "retryDelay": "35769s"';
+
+  it("reads the retry delay Gemini asks for", () => {
+    expect(retryDelaySeconds(DAILY)).toBe(35769);
+    expect(retryDelaySeconds("Please retry in 7.5s.")).toBe(7.5);
+    expect(retryDelaySeconds("Please retry in 1m30s.")).toBe(90);
+    expect(retryDelaySeconds("Internal error")).toBeNull();
+  });
+
+  it("waits as long as asked for a short rate limit, then succeeds", async () => {
+    const waits: number[] = [];
+    const client = fakeClient([
+      new ApiError({ message: "Please retry in 7s.", status: 429 }),
+      callResponse("request_more_info", alexMoreInfo),
+    ]);
+    const llm = createGeminiLlm(config, client, async (ms) => waits.push(ms));
+    expect((await llm([{ role: "user", content: "x" }])).stop_reason).toBe("tool_use");
+    expect(waits).toEqual([7000]);
+  });
+
+  it("stops the run on a used-up daily quota instead of retrying or escalating every application", async () => {
+    const client = fakeClient([new ApiError({ message: DAILY, status: 429 })]);
+    const llm = createGeminiLlm(config, client, async () => {});
+    await expect(llm([{ role: "user", content: "x" }])).rejects.toThrow(/quota for gemini-test is used up/);
+    expect(client.requests).toHaveLength(1);
   });
 });

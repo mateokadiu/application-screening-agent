@@ -17,7 +17,7 @@ describe("decision policy", () => {
 describe("guardrails accept honest decisions", () => {
   it("A → advance", () => {
     const v = checkToolCall("advance_to_interview", mariaAdvance, ctx(MARIA));
-    expect(v).toMatchObject({ outcome: "allow", tool: "advance_to_interview", score: 88 });
+    expect(v).toMatchObject({ outcome: "allow", tool: "advance_to_interview", score: 82 });
   });
 
   it("B → reject (recommendation)", () => {
@@ -29,8 +29,8 @@ describe("guardrails accept honest decisions", () => {
     const v = checkToolCall("request_more_info", alexMoreInfo, ctx(ALEX));
     expect(v).toMatchObject({
       outcome: "allow",
-      score: 25,
-      ceiling: 75,
+      score: 22,
+      ceiling: 87,
       flags: ["injection_scanner_hit", "model_reported_manipulation"],
     });
   });
@@ -53,7 +53,7 @@ describe("guardrails stop a model that fell for sample C", () => {
 
   it("blocks a score that does not match the criteria", () => {
     const v = checkToolCall("request_more_info", { ...alexMoreInfo, score: 100 }, ctx(ALEX));
-    expect(v.outcome === "retry" && v.violations).toEqual(["score is 100 but the criteria points sum to 25."]);
+    expect(v.outcome === "retry" && v.violations).toEqual(["score is 100 but the criteria points sum to 22."]);
   });
 
   it("blocks the right numbers with the wrong tool", () => {
@@ -75,7 +75,9 @@ describe("guardrails stop a model that fell for sample C", () => {
     input.criteria.availability = { status: "not_stated", points: 15, evidence: "" };
     input.score = 40;
     const v = checkToolCall("request_more_info", input, ctx(ALEX));
-    expect(v.outcome === "retry" && v.violations.join()).toMatch(/availability: status "not_stated" must carry 0 points/);
+    expect(v.outcome === "retry" && v.violations.join()).toMatch(
+      /availability: status "not_stated" must carry 0 points/,
+    );
   });
 
   it("never auto-advances a flagged application, even with an honest high score", () => {
@@ -84,11 +86,24 @@ describe("guardrails stop a model that fell for sample C", () => {
     expect(v).toMatchObject({ outcome: "escalate", flags: ["injection_scanner_hit"] });
   });
 
+  it("requires a quote for ruled_out too, so a fooled model can't force a rejection", () => {
+    const input = structuredClone(johnReject);
+    input.criteria.languages = { status: "ruled_out", points: 0, evidence: "" };
+    const v = checkToolCall("reject", input, ctx(JOHN));
+    expect(v.outcome === "retry" && v.violations[0]).toMatch(/languages: status "ruled_out" needs an evidence excerpt/);
+  });
+
   it("rejects unknown tools and malformed input", () => {
     expect(checkToolCall("finalize_rejection", {}, ctx(JOHN)).outcome).toBe("retry");
     expect(checkToolCall("reject", { score: 5 }, ctx(JOHN)).outcome).toBe("retry");
-    expect(
-      checkToolCall("reject", { ...johnReject, reason: "line one\nline two" }, ctx(JOHN)).outcome,
-    ).toBe("retry");
+    expect(checkToolCall("reject", { ...johnReject, reason: "line one\nline two" }, ctx(JOHN)).outcome).toBe("retry");
+  });
+});
+
+describe("tool name check", () => {
+  it("treats inherited object keys as unknown tools instead of crashing", () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(checkToolCall(name, {}, ctx(JOHN))).toEqual({ outcome: "retry", violations: [`Unknown tool "${name}".`] });
+    }
   });
 });

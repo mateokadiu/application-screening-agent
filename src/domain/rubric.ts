@@ -7,7 +7,7 @@
  * be talked into anything by the text being scored.
  */
 
-export const RUBRIC_VERSION = "css-2026-10-v1";
+export const RUBRIC_VERSION = "css-2026-10-v3";
 export const ROLE = "Customer Support Specialist";
 
 export const CRITERIA = {
@@ -43,12 +43,15 @@ export const CRITERIA = {
     max: 15,
     anchors: ["0-8: available full-time", "0-7: can start within 4 weeks"],
   },
-  communication_and_motivation: {
-    label: "Communication and motivation",
+  // Deliberately not "quality of writing": these applications are short summaries,
+  // and grading prose penalises non-native speakers. Written communication is
+  // better tested in the interview with a sample reply.
+  motivation_and_attitude: {
+    label: "Motivation and service attitude",
     max: 15,
     anchors: [
-      "0-8: clarity and professionalism of the application's writing",
-      "0-7: stated service attitude, motivation or willingness to learn",
+      "0-8: stated motivation for the role or for customer support",
+      "0-7: stated service attitude, empathy or willingness to learn",
     ],
   },
 } as const;
@@ -86,8 +89,7 @@ export function totalScore(assessment: Assessment): number {
  */
 export function scoreCeiling(assessment: Assessment): number {
   return CRITERION_KEYS.reduce(
-    (sum, key) =>
-      sum + (assessment[key].status === "not_stated" ? CRITERIA[key].max : assessment[key].points),
+    (sum, key) => sum + (assessment[key].status === "not_stated" ? CRITERIA[key].max : assessment[key].points),
     0,
   );
 }

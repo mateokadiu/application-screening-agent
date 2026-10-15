@@ -7,6 +7,7 @@ import {
   type DecisionTool,
 } from "../domain/rubric.ts";
 import { TOOL_INPUT_SCHEMAS, type DecisionInput } from "../agent/tools.ts";
+import { relevanceProblem } from "../domain/evidence.ts";
 import { scanForInjection, type InjectionScan } from "./injection.ts";
 
 /**
@@ -16,8 +17,10 @@ import { scanForInjection, type InjectionScan } from "./injection.ts";
  *
  *   1. Schema      – known tool, valid shape, values within range.
  *   2. Consistency – not_stated/ruled_out criteria carry 0 points.
- *   3. Grounding   – every awarded point cites an exact excerpt of the application,
- *                    and that excerpt is not itself instruction-like text.
+ *   3. Grounding   – every evidenced or ruled_out criterion cites an exact excerpt of
+ *                    the application, and that excerpt is not itself instruction-like text.
+ *      Relevance   – the excerpt states the fact being scored (a duration that fits the
+ *                    experience band, a language name, a tool or volume, availability).
  *   4. Arithmetic  – the score is the sum of the criteria.
  *   5. Policy      – the chosen tool is the one the rubric thresholds dictate.
  *   6. Manipulation– a flagged application is never auto-advanced.
@@ -46,16 +49,16 @@ export function normalizeForMatch(s: string): string {
   return s
     .normalize("NFKC")
     .toLowerCase()
-    .replace(/[‘’‛]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[‒-―]/g, "-")
+    .replace(/[\u2018\u2019\u201B]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2012-\u2015]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^[\s.,;:!-]+|[\s.,;:!-]+$/g, "");
 }
 
 function isDecisionTool(name: string): name is DecisionTool {
-  return name in TOOL_INPUT_SCHEMAS;
+  return Object.hasOwn(TOOL_INPUT_SCHEMAS, name);
 }
 
 export function checkToolCall(name: string, rawInput: unknown, ctx: GuardrailContext): GuardrailVerdict {
@@ -86,17 +89,31 @@ export function checkToolCall(name: string, rawInput: unknown, ctx: GuardrailCon
       violations.push(`${key}: status "not_stated" must have empty evidence.`);
     }
 
-    // 3. Grounding
-    if (points > 0 && evidence.trim() === "") {
-      violations.push(`${key}: ${points} points awarded without an evidence excerpt.`);
+    // 3. Grounding: anything that moves the score or the ceiling must be quoted.
+    if (status !== "not_stated" && evidence.trim() === "") {
+      violations.push(`${key}: status "${status}" needs an evidence excerpt from the application.`);
     }
     if (evidence.trim() !== "") {
-      if (!haystack.includes(normalizeForMatch(evidence))) {
+      const quote = normalizeForMatch(evidence);
+      const words = quote.split(" ").filter((w) => /\p{L}/u.test(w)).length;
+      // One word is enough only when it is the fact itself ("English", "Zendesk").
+      const selfEvident =
+        words === 1 &&
+        points > 0 &&
+        key !== "support_experience" &&
+        key !== "motivation_and_attitude" &&
+        relevanceProblem(key, points, evidence) === null;
+      if (words < 2 && !selfEvident) {
+        violations.push(`${key}: evidence "${evidence}" is too short to support anything; quote at least a phrase.`);
+      } else if (!haystack.includes(quote)) {
         violations.push(`${key}: evidence "${evidence}" does not appear verbatim in the application.`);
-      } else if (points > 0 && scanForInjection(evidence).flagged) {
+      } else if (scanForInjection(evidence).flagged) {
         violations.push(
-          `${key}: evidence "${evidence}" is instruction-like text, not a fact about the candidate; it cannot earn points.`,
+          `${key}: evidence "${evidence}" is instruction-like text, not a fact about the candidate; it can't be used as evidence.`,
         );
+      } else {
+        const problem = relevanceProblem(key, points, evidence);
+        if (problem) violations.push(`${key}: ${problem} Quote given: "${evidence}".`);
       }
     }
   }
@@ -137,4 +154,3 @@ export function checkToolCall(name: string, rawInput: unknown, ctx: GuardrailCon
 
   return { outcome: "allow", tool: name, input, score, ceiling, flags };
 }
-
